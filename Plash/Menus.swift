@@ -92,7 +92,7 @@ extension AppState {
 
 			// TODO: DRY this up with the one in SSWebView when everything is in SwiftUI.
 			if
-				let website = WebsitesController.shared.current,
+				let website = webViewController.website,
 				let url = webViewController.webView.url?.normalized(),
 				website.url.normalized() != url
 			{

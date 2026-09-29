@@ -19,11 +19,29 @@ final class AppState: ObservableObject {
 
 	private(set) lazy var statusItemButton = statusItem.button!
 
-	private(set) lazy var webViewController = WebViewController()
+	private(set) lazy var webViewController = with(WebViewController()) {
+		$0.websiteID = primaryWebsiteID
+	}
+
+	/**
+	The website assigned to the main display. `nil` means the current website.
+	*/
+	var primaryWebsiteID: UUID? {
+		Display.primary.flatMap { Defaults[.displayWebsites][$0.id.uuidString] }
+	}
 
 	private(set) lazy var desktopWindow = with(DesktopWindow(display: Defaults[.display])) {
 		$0.contentView = webViewController.webView
 		$0.contentView?.isHidden = true
+	}
+
+	/**
+	Windows for the other displays, keyed by display ID. Each shows its own website.
+	*/
+	private(set) var extraScreens = [UUID: ExtraScreen]()
+
+	private var allWindows: [DesktopWindow] {
+		[desktopWindow] + extraScreens.values.map(\.window)
 	}
 
 	var isBrowsingMode = false {
@@ -32,8 +50,11 @@ final class AppState: ObservableObject {
 				return
 			}
 
-			desktopWindow.isInteractive = isBrowsingMode
-			desktopWindow.alphaValue = isBrowsingMode ? 1 : Defaults[.opacity]
+			for window in allWindows {
+				window.isInteractive = isBrowsingMode
+				window.alphaValue = isBrowsingMode ? 1 : Defaults[.opacity]
+			}
+
 			resetTimer()
 		}
 	}
@@ -42,6 +63,8 @@ final class AppState: ObservableObject {
 		didSet {
 			resetTimer()
 			statusItemButton.appearsDisabled = !isEnabled
+
+			rebuildExtraScreens()
 
 			if isEnabled {
 				loadUserURL()
@@ -145,13 +168,56 @@ final class AppState: ObservableObject {
 	}
 
 	func recreateWebView() {
+		webViewController.websiteID = primaryWebsiteID
 		webViewController.recreateWebView()
 		desktopWindow.contentView = webViewController.webView
 	}
 
 	func recreateWebViewAndReload() {
 		recreateWebView()
+		rebuildExtraScreens()
 		loadUserURL()
+	}
+
+	/**
+	Recreates the extra display windows from the `displayWebsites` setting. Doesn't load the pages.
+	*/
+	func rebuildExtraScreens() {
+		for screen in extraScreens.values {
+			screen.window.orderOut(self)
+			screen.window.contentView = nil
+		}
+
+		extraScreens = [:]
+
+		guard isEnabled else {
+			return
+		}
+
+		let primaryID = Display.primary?.id
+
+		for display in Display.all where display.id != primaryID {
+			guard
+				let websiteID = Defaults[.displayWebsites][display.id.uuidString],
+				WebsitesController.shared.all[id: websiteID] != nil
+			else {
+				continue
+			}
+
+			let screen = ExtraScreen(display: display, websiteID: websiteID)
+			screen.window.alphaValue = isBrowsingMode ? 1 : Defaults[.opacity]
+			screen.window.collectionBehavior.toggleExistence(.canJoinAllSpaces, shouldExist: Defaults[.showOnAllSpaces])
+			screen.window.isInteractive = isBrowsingMode
+			screen.window.orderFront(self)
+			extraScreens[display.id] = screen
+		}
+	}
+
+	/**
+	Applies a change to every display window.
+	*/
+	func forEachWindow(_ body: (DesktopWindow) -> Void) {
+		allWindows.forEach(body)
 	}
 
 	func reloadWebsite() {
@@ -162,7 +228,12 @@ final class AppState: ObservableObject {
 	}
 
 	func loadUserURL() {
-		loadURL(WebsitesController.shared.current?.url)
+		guard isEnabled else {
+			return
+		}
+
+		loadURL(webViewController.website?.url)
+		extraScreens.values.forEach { $0.load() }
 	}
 
 	func toggleBrowsingMode() {
@@ -198,15 +269,66 @@ final class AppState: ObservableObject {
 	/**
 	Replaces app-specific placeholder strings in the given URL with a corresponding value.
 	*/
-	func replacePlaceholders(of url: URL) throws -> URL? {
+	func replacePlaceholders(of url: URL, screen: NSScreen? = nil) throws -> URL? {
 		// Here we swap out `[[screenWidth]]` and `[[screenHeight]]` for their actual values.
 		// We proceed only if we have an `NSScreen` to work with.
-		guard let screen = desktopWindow.targetDisplay?.screen ?? .main else {
+		guard let screen = screen ?? desktopWindow.targetDisplay?.screen ?? .main else {
 			return nil
 		}
 
 		return try url
 			.replacingPlaceholder("[[screenWidth]]", with: String(format: "%.0f", screen.frameWithoutStatusBar.width))
 			.replacingPlaceholder("[[screenHeight]]", with: String(format: "%.0f", screen.frameWithoutStatusBar.height))
+	}
+}
+
+/**
+A desktop window and web view for one additional display.
+*/
+@MainActor
+final class ExtraScreen {
+	let window: DesktopWindow
+	let controller = WebViewController()
+
+	init(display: Display, websiteID: UUID) {
+		controller.websiteID = websiteID
+		window = DesktopWindow(display: display)
+		window.contentView = controller.webView
+		window.contentView?.isHidden = true
+	}
+
+	func load() {
+		guard
+			let url = controller.websiteID.flatMap({ WebsitesController.shared.all[id: $0] })?.url,
+			url.isValid
+		else {
+			return
+		}
+
+		do {
+			controller.loadURL(try AppState.shared.replacePlaceholders(of: url, screen: window.targetDisplay?.screen) ?? url)
+		} catch {
+			error.presentAsModal()
+			return
+		}
+
+		delay(.seconds(1)) { [weak self] in
+			self?.window.contentView?.isHidden = false
+		}
+	}
+}
+
+extension Display {
+	/**
+	The "Show on" display, or the current main display if that one is not connected.
+
+	Doesn't use `Display.main` as that is captured once at launch. Doesn't touch `desktopWindow` as that depends on the web view.
+	*/
+	static var primary: Self? {
+		if let display = Defaults[.display], display.isConnected {
+			return display
+		}
+
+		return Self(transientID: CGMainDisplayID())
 	}
 }

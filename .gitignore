@@ -1,1 +1,9 @@
 xcuserdata/
+CLAUDE.md
+GEMINI.md
+AGENTS.md
+.playwright-mcp/
+.playwright/
+.stagehand/
+.local/
+graft/

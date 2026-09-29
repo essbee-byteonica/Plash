@@ -23,6 +23,8 @@ extension Defaults.Keys {
 	static let opacity = Key<Double>("opacity", default: 1)
 	static let reloadInterval = Key<Double?>("reloadInterval")
 	static let display = Key<Display?>("display")
+	/// Extra displays (display ID string → website ID) that show their own website. The `display` above always shows the current website.
+	static let displayWebsites = Key<[String: UUID]>("displayWebsites", default: [:])
 	static let deactivateOnBattery = Key<Bool>("deactivateOnBattery", default: false)
 	static let showOnAllSpaces = Key<Bool>("showOnAllSpaces", default: false)
 	static let bringBrowsingModeToFront = Key<Bool>("bringBrowsingModeToFront", default: false)

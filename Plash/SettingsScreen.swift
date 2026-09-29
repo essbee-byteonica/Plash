@@ -31,6 +31,7 @@ private struct GeneralSettings: View {
 			}
 			Section {
 				DisplaySetting()
+				ExtraDisplaysSetting()
 				ShowOnAllSpacesSetting()
 			}
 		}
@@ -210,6 +211,25 @@ private struct DisplaySetting: View {
 			}
 
 			chosenDisplay = .main
+		}
+	}
+}
+
+private struct ExtraDisplaysSetting: View {
+	@ObservedObject private var displayWrapper = Display.observable
+	@Default(.display) private var chosenDisplay
+	@Default(.displayWebsites) private var displayWebsites
+	@Default(.websites) private var websites
+
+	var body: some View {
+		ForEach(displayWrapper.wrappedValue.all) { display in
+			Picker(display.localizedName, selection: $displayWebsites[display.id.uuidString]) {
+				// The chosen "Show on" display always shows something, the others can be off.
+				Text(display.id == Display.primary?.id ? "Current website" : "Nothing").tag(nil as UUID?)
+				ForEach(websites) { website in
+					Text(website.menuTitle).tag(website.id as UUID?)
+				}
+			}
 		}
 	}
 }

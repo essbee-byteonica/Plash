@@ -8,7 +8,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.sindresorhus.Plash</string>
+			<string>com.byteonica.Plash</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>plash</string>
