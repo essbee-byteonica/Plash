@@ -107,13 +107,6 @@ struct AddWebsiteScreen: View {
 				.disabled(!isURLValid)
 			}
 		}
-		.task {
-			guard isEditing else {
-				return
-			}
-
-			website.wrappedValue.makeCurrent()
-		}
 	}
 
 	private var firstLaunchView: some View {

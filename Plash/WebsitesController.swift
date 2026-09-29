@@ -76,9 +76,33 @@ final class WebsitesController {
 	Make a website the current one.
 	*/
 	private func makeCurrent(_ website: Website) {
+		setCurrentFlag(website)
+
+		// "Current" is what the main display shows. Fall back to the first display if none has a website yet.
+		if let display = Display.primary ?? Display.all.first {
+			Defaults[.displayWebsites][display.id.uuidString] = website.id
+		}
+	}
+
+	private func setCurrentFlag(_ website: Website) {
 		all = all.modifying {
 			$0.isCurrent = $0.id == website.id
 		}
+	}
+
+	/**
+	Makes the current website the one the main display shows, for when it was changed from the Displays settings.
+	*/
+	func syncCurrentWithMainDisplay() {
+		guard
+			let id = AppState.shared.primaryWebsiteID,
+			id != _current?.id,
+			let website = all[id: id]
+		else {
+			return
+		}
+
+		setCurrentFlag(website)
 	}
 
 	/**

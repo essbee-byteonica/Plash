@@ -5204,6 +5204,7 @@ extension View {
 
 enum SettingsTabType {
 	case general
+	case displays
 	case advanced
 	case shortcuts
 
@@ -5211,6 +5212,8 @@ enum SettingsTabType {
 		switch self {
 		case .general:
 			Label("General", systemImage: "gearshape")
+		case .displays:
+			Label("Displays", systemImage: "display.2")
 		case .advanced:
 			Label("Advanced", systemImage: "gearshape.2")
 		case .shortcuts:

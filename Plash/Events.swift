@@ -86,7 +86,19 @@ extension AppState {
 
 		Defaults.publisher(.opacity)
 			.sink { [self] change in
-				forEachWindow { $0.alphaValue = isBrowsingMode ? 1 : change.newValue }
+				applyOpacity()
+			}
+			.store(in: &cancellables)
+
+		Defaults.publisher(.displayOpacity, options: [])
+			.sink { [self] _ in
+				applyOpacity()
+			}
+			.store(in: &cancellables)
+
+		Defaults.publisher(.displayReloadInterval, options: [])
+			.sink { [self] _ in
+				resetTimer()
 			}
 			.store(in: &cancellables)
 
@@ -96,16 +108,10 @@ extension AppState {
 			}
 			.store(in: &cancellables)
 
-		Defaults.publisher(.display, options: [])
-			.sink { [self] change in
-				desktopWindow.targetDisplay = change.newValue
-				recreateWebViewAndReload()
-			}
-			.store(in: &cancellables)
-
 		Defaults.publisher(.displayWebsites, options: [])
 			.receive(on: DispatchQueue.main)
 			.sink { [self] _ in
+				WebsitesController.shared.syncCurrentWithMainDisplay()
 				recreateWebViewAndReload()
 			}
 			.store(in: &cancellables)
@@ -115,6 +121,8 @@ extension AppState {
 			.publisher(for: NSApplication.didChangeScreenParametersNotification)
 			.debounce(for: .seconds(1), scheduler: DispatchQueue.main)
 			.sink { [self] _ in
+				updatePrimaryWindow()
+
 				// Only touch the main web view if which website it should show changed.
 				if webViewController.websiteID != primaryWebsiteID {
 					recreateWebViewAndReload()
@@ -139,7 +147,7 @@ extension AppState {
 
 		Defaults.publisher(.bringBrowsingModeToFront, options: [])
 			.sink { [self] _ in
-				forEachWindow { $0.isInteractive = $0.isInteractive }
+				forEachVisibleWindow { $0.isInteractive = $0.isInteractive }
 			}
 			.store(in: &cancellables)
 

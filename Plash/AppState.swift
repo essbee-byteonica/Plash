@@ -24,13 +24,13 @@ final class AppState: ObservableObject {
 	}
 
 	/**
-	The website assigned to the main display. `nil` means the current website.
+	The website assigned to the display the main window is on. `nil` means the current website.
 	*/
 	var primaryWebsiteID: UUID? {
 		Display.primary.flatMap { Defaults[.displayWebsites][$0.id.uuidString] }
 	}
 
-	private(set) lazy var desktopWindow = with(DesktopWindow(display: Defaults[.display])) {
+	private(set) lazy var desktopWindow = with(DesktopWindow(display: Display.primary)) {
 		$0.contentView = webViewController.webView
 		$0.contentView?.isHidden = true
 	}
@@ -50,11 +50,8 @@ final class AppState: ObservableObject {
 				return
 			}
 
-			for window in allWindows {
-				window.isInteractive = isBrowsingMode
-				window.alphaValue = isBrowsingMode ? 1 : Defaults[.opacity]
-			}
-
+			forEachVisibleWindow { $0.isInteractive = isBrowsingMode }
+			applyOpacity()
 			resetTimer()
 		}
 	}
@@ -67,8 +64,8 @@ final class AppState: ObservableObject {
 			rebuildExtraScreens()
 
 			if isEnabled {
+				updatePrimaryWindow()
 				loadUserURL()
-				desktopWindow.makeKeyAndOrderFront(self)
 			} else {
 				// TODO: Properly unload the web view instead of just clearing and hiding it.
 				desktopWindow.orderOut(self)
@@ -85,7 +82,7 @@ final class AppState: ObservableObject {
 		}
 	}
 
-	var reloadTimer: Timer?
+	var reloadTimers = [Timer]()
 
 	var webViewError: Error? {
 		didSet {
@@ -117,6 +114,21 @@ final class AppState: ObservableObject {
 	}
 
 	private func didLaunch() {
+		// Before per-display settings, the "Show on" display always showed the current website.
+		SSApp.runOnce(identifier: "migrateToPerDisplayWebsites") {
+			guard let website = WebsitesController.shared.current else {
+				return
+			}
+
+			// If that display isn't connected right now, the main display shows it instead, like before.
+			let oldDisplay = Defaults[.display]
+			let displays = [oldDisplay, oldDisplay?.isConnected == false || oldDisplay == nil ? Display.main : nil].compactMap { $0 }
+
+			for display in displays where Defaults[.displayWebsites][display.id.uuidString] == nil {
+				Defaults[.displayWebsites][display.id.uuidString] = website.id
+			}
+		}
+
 		_ = statusItemButton
 		_ = desktopWindow
 		setUpEvents()
@@ -148,21 +160,50 @@ final class AppState: ObservableObject {
 		isEnabled = !isManuallyDisabled && !isScreenLocked && !(Defaults[.deactivateOnBattery] && powerSourceWatcher?.powerSource.isUsingBattery == true)
 	}
 
+	/**
+	One reload timer per display, each using the display's own interval or else the global one.
+	*/
 	func resetTimer() {
-		reloadTimer?.invalidate()
-		reloadTimer = nil
+		reloadTimers.forEach { $0.invalidate() }
+		reloadTimers = []
 
 		guard
 			isEnabled,
-			!isBrowsingMode,
-			let reloadInterval = Defaults[.reloadInterval]
+			!isBrowsingMode
 		else {
 			return
 		}
 
-		reloadTimer = Timer.scheduledTimer(withTimeInterval: reloadInterval, repeats: true) { [self] _ in
-			Task { @MainActor in
-				reloadWebsite()
+		func interval(for id: UUID?) -> Double? {
+			guard let seconds = id.flatMap({ Defaults[.displayReloadInterval][$0.uuidString] }) else {
+				return Defaults[.reloadInterval]
+			}
+
+			return seconds > 0 ? seconds : nil
+		}
+
+		func schedule(_ interval: Double?, _ action: @escaping @MainActor () -> Void) {
+			guard let interval else {
+				return
+			}
+
+			reloadTimers.append(Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+				Task { @MainActor in
+					action()
+				}
+			})
+		}
+
+		// We always load the website the user specified in case it's a redirect that may change on each call.
+		if let primaryID = Display.primary?.id {
+			schedule(interval(for: primaryID)) { [self] in
+				loadURL(webViewController.website?.url)
+			}
+		}
+
+		for (id, screen) in extraScreens {
+			schedule(interval(for: id)) { [weak screen] in
+				screen?.load()
 			}
 		}
 	}
@@ -173,7 +214,24 @@ final class AppState: ObservableObject {
 		desktopWindow.contentView = webViewController.webView
 	}
 
+	/**
+	Moves the main window to its display, or hides it when no display has a website.
+	*/
+	func updatePrimaryWindow() {
+		guard
+			isEnabled,
+			let display = Display.primary
+		else {
+			desktopWindow.orderOut(self)
+			return
+		}
+
+		desktopWindow.targetDisplay = display
+		desktopWindow.orderFront(self)
+	}
+
 	func recreateWebViewAndReload() {
+		updatePrimaryWindow()
 		recreateWebView()
 		rebuildExtraScreens()
 		loadUserURL()
@@ -205,11 +263,28 @@ final class AppState: ObservableObject {
 			}
 
 			let screen = ExtraScreen(display: display, websiteID: websiteID)
-			screen.window.alphaValue = isBrowsingMode ? 1 : Defaults[.opacity]
 			screen.window.collectionBehavior.toggleExistence(.canJoinAllSpaces, shouldExist: Defaults[.showOnAllSpaces])
 			screen.window.isInteractive = isBrowsingMode
 			screen.window.orderFront(self)
 			extraScreens[display.id] = screen
+		}
+
+		applyOpacity()
+		resetTimer()
+	}
+
+	/**
+	Sets the opacity of each display window. Browsing mode always uses full opacity.
+	*/
+	func applyOpacity() {
+		func opacity(for id: UUID?) -> Double {
+			id.flatMap { Defaults[.displayOpacity][$0.uuidString] } ?? Defaults[.opacity]
+		}
+
+		desktopWindow.alphaValue = isBrowsingMode ? 1 : opacity(for: Display.primary?.id)
+
+		for (id, screen) in extraScreens {
+			screen.window.alphaValue = isBrowsingMode ? 1 : opacity(for: id)
 		}
 	}
 
@@ -218,6 +293,13 @@ final class AppState: ObservableObject {
 	*/
 	func forEachWindow(_ body: (DesktopWindow) -> Void) {
 		allWindows.forEach(body)
+	}
+
+	/**
+	Like `forEachWindow`, but skips the main window while it's hidden because no display has a website.
+	*/
+	func forEachVisibleWindow(_ body: (DesktopWindow) -> Void) {
+		(Display.primary == nil ? Array(extraScreens.values.map(\.window)) : allWindows).forEach(body)
 	}
 
 	func reloadWebsite() {
@@ -232,7 +314,10 @@ final class AppState: ObservableObject {
 			return
 		}
 
-		loadURL(webViewController.website?.url)
+		if Display.primary != nil {
+			loadURL(webViewController.website?.url)
+		}
+
 		extraScreens.values.forEach { $0.load() }
 	}
 
@@ -320,15 +405,12 @@ final class ExtraScreen {
 
 extension Display {
 	/**
-	The "Show on" display, or the current main display if that one is not connected.
+	The display the main window (and the app's menu, tooltip, etc.) belongs to: the first connected display that has a website.
 
-	Doesn't use `Display.main` as that is captured once at launch. Doesn't touch `desktopWindow` as that depends on the web view.
+	Doesn't touch `desktopWindow` as that depends on the web view.
 	*/
 	static var primary: Self? {
-		if let display = Defaults[.display], display.isConnected {
-			return display
-		}
-
-		return Self(transientID: CGMainDisplayID())
+		let assignments = Defaults[.displayWebsites]
+		return all.first { assignments[$0.id.uuidString] != nil }
 	}
 }

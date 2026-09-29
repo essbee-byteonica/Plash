@@ -6,14 +6,18 @@ struct SettingsScreen: View {
 	var body: some View {
 		TabView {
 			GeneralSettings()
+				.frame(width: 400)
 				.settingsTabItem(.general)
+			DisplaysSettings()
+				.settingsTabItem(.displays)
 			ShortcutsSettings()
+				.frame(width: 400)
 				.settingsTabItem(.shortcuts)
 			AdvancedSettings()
+				.frame(width: 400)
 				.settingsTabItem(.advanced)
 		}
 		.formStyle(.grouped)
-		.frame(width: 400)
 		.fixedSize()
 		.windowLevel(.floating + 1) // To ensure it's always above the Plash browser window.
 	}
@@ -26,12 +30,6 @@ private struct GeneralSettings: View {
 				LaunchAtLogin.Toggle()
 			}
 			Section {
-				ReloadIntervalSetting()
-				OpacitySetting()
-			}
-			Section {
-				DisplaySetting()
-				ExtraDisplaysSetting()
 				ShowOnAllSpacesSetting()
 			}
 		}
@@ -102,7 +100,7 @@ private struct OpenExternalLinksInBrowserSetting: View {
 }
 
 private struct OpacitySetting: View {
-	@Default(.opacity) private var opacity
+	@Binding var opacity: Double
 
 	var body: some View {
 		Slider(
@@ -120,7 +118,7 @@ private struct ReloadIntervalSetting: View {
 	private static let defaultReloadInterval = 60.0
 	private static let minimumReloadInterval = 0.1
 
-	@Default(.reloadInterval) private var reloadInterval
+	@Binding var reloadInterval: Double?
 	@FocusState private var isTextFieldFocused: Bool
 
 	// TODO: Improve VoiceOver accessibility for this control.
@@ -185,51 +183,69 @@ private struct HideMenuBarIconSetting: View {
 	}
 }
 
-private struct DisplaySetting: View {
+private struct DisplaysSettings: View {
 	@ObservedObject private var displayWrapper = Display.observable
-	@Default(.display) private var chosenDisplay
+	@State private var selection: UUID?
 
 	var body: some View {
-		Picker(
-			selection: $chosenDisplay.getMap(\.?.withFallbackToMain)
-		) {
-			ForEach(displayWrapper.wrappedValue.all) { display in
-				Text(display.localizedName)
-					.tag(display)
-					// A view cannot have multiple tags, otherwise, this would have been the best solution.
-//					.if(display == .main) {
-//						$0.tag(nil as Display?)
-//					}
-			}
-		} label: {
-			Text("Show on")
-			Link("Multi-display support ›", destination: "https://github.com/sindresorhus/Plash/issues/2")
-		}
-		.task(id: chosenDisplay) {
-			guard chosenDisplay == nil else {
-				return
-			}
+		let displays = displayWrapper.wrappedValue.all
+		let selected = displays.first { $0.id == selection } ?? displays.first
 
-			chosenDisplay = .main
+		Form {
+			Section {
+				Picker("Display", selection: Binding(get: { selected?.id }, set: { selection = $0 })) {
+					ForEach(displays) {
+						Text($0.localizedName).tag($0.id as UUID?)
+					}
+				}
+				.pickerStyle(.segmented)
+				.labelsHidden()
+			}
+			if let selected {
+				DisplaySettingsForm(display: selected)
+			}
 		}
+		// Wide enough for one segment per display.
+		.frame(width: max(400, Double(displays.count) * 180 + 60))
 	}
 }
 
-private struct ExtraDisplaysSetting: View {
-	@ObservedObject private var displayWrapper = Display.observable
-	@Default(.display) private var chosenDisplay
+private struct DisplaySettingsForm: View {
+	let display: Display
+
 	@Default(.displayWebsites) private var displayWebsites
 	@Default(.websites) private var websites
+	// The old global settings are now only the starting values for displays without their own.
+	@Default(.opacity) private var opacity
+	@Default(.reloadInterval) private var reloadInterval
+	@Default(.displayOpacity) private var displayOpacity
+	@Default(.displayReloadInterval) private var displayReloadInterval
 
 	var body: some View {
-		ForEach(displayWrapper.wrappedValue.all) { display in
-			Picker(display.localizedName, selection: $displayWebsites[display.id.uuidString]) {
-				// The chosen "Show on" display always shows something, the others can be off.
-				Text(display.id == Display.primary?.id ? "Current website" : "Nothing").tag(nil as UUID?)
+		let key = display.id.uuidString
+
+		Section {
+			Picker("Website", selection: $displayWebsites[key]) {
+				Text("Nothing").tag(nil as UUID?)
 				ForEach(websites) { website in
 					Text(website.menuTitle).tag(website.id as UUID?)
 				}
 			}
+			OpacitySetting(
+				opacity: Binding(get: { displayOpacity[key] ?? opacity }, set: { displayOpacity[key] = $0 })
+			)
+			ReloadIntervalSetting(
+				reloadInterval: Binding(
+					get: {
+						guard let seconds = displayReloadInterval[key] else {
+							return reloadInterval
+						}
+
+						return seconds > 0 ? seconds : nil
+					},
+					set: { displayReloadInterval[key] = $0 ?? 0 }
+				)
+			)
 		}
 	}
 }
