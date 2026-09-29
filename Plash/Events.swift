@@ -19,7 +19,7 @@ extension AppState {
 						webViewController.webView.zoomLevelWrapper = zoomLevel
 					}
 
-					statusItemButton.toolTip = WebsitesController.shared.current?.tooltip
+					statusItemButton.toolTip = webViewController.website?.tooltip
 				case .failure(let error):
 					webViewError = error
 				}
@@ -53,6 +53,15 @@ extension AppState {
 			.receive(on: DispatchQueue.main)
 			.sink { [self] in
 				resetTimer()
+
+				// Drop display assignments that point to a deleted website.
+				let websiteIDs = Set($0.newValue.map(\.id))
+				let assignments = Defaults[.displayWebsites]
+				let validAssignments = assignments.filter { websiteIDs.contains($0.value) }
+				if validAssignments.count != assignments.count {
+					Defaults[.displayWebsites] = validAssignments
+				}
+
 				recreateWebViewAndReload()
 
 				// We never destroy the webview, so we have to make sure it's not in browsing mode when there are no websites.
@@ -77,7 +86,19 @@ extension AppState {
 
 		Defaults.publisher(.opacity)
 			.sink { [self] change in
-				desktopWindow.alphaValue = isBrowsingMode ? 1 : change.newValue
+				applyOpacity()
+			}
+			.store(in: &cancellables)
+
+		Defaults.publisher(.displayOpacity, options: [])
+			.sink { [self] _ in
+				applyOpacity()
+			}
+			.store(in: &cancellables)
+
+		Defaults.publisher(.displayReloadInterval, options: [])
+			.sink { [self] _ in
+				resetTimer()
 			}
 			.store(in: &cancellables)
 
@@ -87,9 +108,28 @@ extension AppState {
 			}
 			.store(in: &cancellables)
 
-		Defaults.publisher(.display, options: [])
-			.sink { [self] change in
-				desktopWindow.targetDisplay = change.newValue
+		Defaults.publisher(.displayWebsites, options: [])
+			.receive(on: DispatchQueue.main)
+			.sink { [self] _ in
+				WebsitesController.shared.syncCurrentWithMainDisplay()
+				recreateWebViewAndReload()
+			}
+			.store(in: &cancellables)
+
+		// Displays getting connected or disconnected.
+		NotificationCenter.default
+			.publisher(for: NSApplication.didChangeScreenParametersNotification)
+			.debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+			.sink { [self] _ in
+				updatePrimaryWindow()
+
+				// Only touch the main web view if which website it should show changed.
+				if webViewController.websiteID != primaryWebsiteID {
+					recreateWebViewAndReload()
+				} else {
+					rebuildExtraScreens()
+					extraScreens.values.forEach { $0.load() }
+				}
 			}
 			.store(in: &cancellables)
 
@@ -101,13 +141,13 @@ extension AppState {
 
 		Defaults.publisher(.showOnAllSpaces)
 			.sink { [self] change in
-				desktopWindow.collectionBehavior.toggleExistence(.canJoinAllSpaces, shouldExist: change.newValue)
+				forEachWindow { $0.collectionBehavior.toggleExistence(.canJoinAllSpaces, shouldExist: change.newValue) }
 			}
 			.store(in: &cancellables)
 
 		Defaults.publisher(.bringBrowsingModeToFront, options: [])
 			.sink { [self] _ in
-				desktopWindow.isInteractive = desktopWindow.isInteractive
+				forEachVisibleWindow { $0.isInteractive = $0.isInteractive }
 			}
 			.store(in: &cancellables)
 
